@@ -1,6 +1,6 @@
 # BentoTruck — Project Document
 
-> **Current version:** 0.1.0 | **Python:** ≥ 3.9 | **Status:** MVP core implemented, remaining compartments design-stage
+> **Current version:** 0.2.0 | **Python:** ≥ 3.9 | **Status:** MVP core implemented, remaining compartments design-stage
 
 ---
 
@@ -43,8 +43,8 @@ The guiding design values:
 
 | Item | Status |
 |---|---|
-| PyPI name `bentotruck` | Reserved |
-| Version | 0.1.0 |
+| PyPI name `bentotruck` | Published (0.1.0 placeholder, 2026-06-24) |
+| Version | 0.2.0 — first real release |
 | `rice` (core agent) | Implemented — `Agent`, `Session`, `Context`, `State`, `Event`, `EventBus` |
 | `nigiri` (model providers) | Implemented — `ModelProvider` base, `Mock`, `OpenAI`, `Anthropic`, `Gemini`, `Ollama` |
 | `gyoza` (tools) | Implemented — `Tool` base, `PythonTool`, `RESTTool`, `SQLTool`, `FilesystemTool`, `Toolbox` |

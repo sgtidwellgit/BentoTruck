@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bentotruck"
-version = "0.1.0"
+version = "0.2.0"
 description = "An agent engineering framework — every compartment of the bento box is a building block for agentic systems."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "sgtidwell" }]
 keywords = ["agents", "agentic", "llm", "orchestration", "tools", "framework"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
