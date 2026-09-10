@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bentotruck"
-version = "0.2.0"
+version = "0.2.1"
 description = "An agent engineering framework — every compartment of the bento box is a building block for agentic systems."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -33,6 +33,15 @@ dev = ["pytest>=7", "pytest-cov", "responses>=0.23", "build", "twine"]
 
 [project.urls]
 Homepage = "https://github.com/sgtidwellgit/BentoTruck"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/",
+    "tests/",
+    "README.md",
+    "PROJECT.md",
+    "pyproject.toml",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/bentotruck"]
