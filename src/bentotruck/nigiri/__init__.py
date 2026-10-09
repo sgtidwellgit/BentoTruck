@@ -47,12 +47,35 @@ class Message:
 
 @dataclass
 class ModelResponse:
-    """Normalized result of a generate() call — text plus any tool calls the model requested."""
+    """
+    Normalized result of a generate() call — text plus any tool calls the model requested.
+
+    `usage` holds token counts normalized to `{"input_tokens": ..., "output_tokens": ...}`
+    when the vendor reports them, and is empty otherwise.
+    """
 
     content: str
     tool_calls: list[ToolCall] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
     model: str | None = None
+    usage: dict[str, int] = field(default_factory=dict)
+
+    @classmethod
+    def calling(cls, name: str, content: str = "", **arguments: Any) -> "ModelResponse":
+        """Shorthand for a response that requests one tool call — handy for scripting `Mock` replies."""
+
+        return cls(content=content, tool_calls=[ToolCall(id=_new_id(), name=name, arguments=arguments)])
+
+
+def _usage(input_tokens: Any, output_tokens: Any) -> dict[str, int]:
+    """Normalize a vendor's token counts, dropping anything it didn't report."""
+
+    usage: dict[str, int] = {}
+    if input_tokens is not None:
+        usage["input_tokens"] = int(input_tokens)
+    if output_tokens is not None:
+        usage["output_tokens"] = int(output_tokens)
+    return usage
 
 
 class ModelProvider(ABC):
@@ -68,22 +91,35 @@ class ModelProvider(ABC):
     ) -> ModelResponse:
         raise NotImplementedError
 
+    def complete(self, prompt: str, *, system: str | None = None, **kwargs: Any) -> str:
+        """Convenience: send one user prompt (plus optional system prompt) and return the reply text."""
+
+        messages = [Message(role="system", content=system)] if system else []
+        messages.append(Message(role="user", content=prompt))
+        return self.generate(messages, **kwargs).content
+
 
 class Mock(ModelProvider):
     """
     Offline, deterministic provider for tests and demos — makes no network calls.
 
-    Pass a fixed `reply`, or a `responder` callable for scripted multi-turn
-    behavior: `responder(messages, tools) -> ModelResponse`.
+    Three ways to script it, checked in this order:
+
+    - `responder(messages, tools) -> ModelResponse` for fully dynamic behavior
+    - `replies=[...]` — strings or ModelResponses returned one per call; once
+      only one is left, it repeats forever
+    - `reply="..."` — the same text every call
     """
 
     def __init__(
         self,
         reply: str = "ok",
         *,
+        replies: list[str | ModelResponse] | None = None,
         responder: Callable[[list[Message], list[ToolSpec] | None], ModelResponse] | None = None,
     ) -> None:
         self.reply = reply
+        self.replies = list(replies or [])
         self.responder = responder
         self.calls: list[list[Message]] = []
 
@@ -91,11 +127,16 @@ class Mock(ModelProvider):
         self.calls.append(list(messages))
         if self.responder is not None:
             return self.responder(messages, tools)
+        if self.replies:
+            nxt = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+            if isinstance(nxt, ModelResponse):
+                return nxt if nxt.model else ModelResponse(nxt.content, nxt.tool_calls, nxt.raw, "mock", nxt.usage)
+            return ModelResponse(content=nxt, model="mock")
         return ModelResponse(content=self.reply, model="mock")
 
 
 # --- OpenAI-shaped wire format -------------------------------------------------
-# Shared by OpenAI and Ollama, whose chat APIs both mirror this message/tool shape.
+# Shared by OpenAI, Azure, vLLM, LM Studio, and Ollama, whose chat APIs all mirror this message/tool shape.
 
 
 def _message_to_openai(m: Message) -> dict[str, Any]:
@@ -114,7 +155,62 @@ def _tool_to_openai(t: ToolSpec) -> dict[str, Any]:
     return {"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.parameters}}
 
 
-class OpenAI(ModelProvider):
+class OpenAICompatible(ModelProvider):
+    """
+    Provider for any server that speaks the OpenAI Chat Completions wire format —
+    vLLM, LM Studio, llama.cpp, LiteLLM, and many hosted gateways. The API key is
+    optional because most self-hosted servers don't require one.
+    """
+
+    def __init__(self, model: str, *, base_url: str, api_key: str | None = None, timeout: int = 60) -> None:
+        self.model = model
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+
+    def _url(self) -> str:
+        return f"{self.base_url}/chat/completions"
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _params(self) -> dict[str, str] | None:
+        return None
+
+    def generate(self, messages, *, tools=None, **kwargs):
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": [_message_to_openai(m) for m in messages],
+        }
+        if tools:
+            payload["tools"] = [_tool_to_openai(t) for t in tools]
+        payload.update(kwargs)
+
+        response = requests.post(
+            self._url(), headers=self._headers(), params=self._params(), json=payload, timeout=self.timeout
+        )
+        response.raise_for_status()
+        data = response.json()
+        choice = data["choices"][0]["message"]
+
+        tool_calls = [
+            ToolCall(id=tc["id"], name=tc["function"]["name"], arguments=json.loads(tc["function"]["arguments"] or "{}"))
+            for tc in choice.get("tool_calls") or []
+        ]
+        usage = data.get("usage") or {}
+        return ModelResponse(
+            content=choice.get("content") or "",
+            tool_calls=tool_calls,
+            raw=data,
+            model=data.get("model", self.model),
+            usage=_usage(usage.get("prompt_tokens"), usage.get("completion_tokens")),
+        )
+
+
+class OpenAI(OpenAICompatible):
     """Provider for the OpenAI Chat Completions API."""
 
     def __init__(
@@ -125,38 +221,72 @@ class OpenAI(ModelProvider):
         base_url: str = "https://api.openai.com/v1",
         timeout: int = 30,
     ) -> None:
-        self.model = model
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
+        super().__init__(model, base_url=base_url, api_key=api_key or os.environ.get("OPENAI_API_KEY"), timeout=timeout)
 
     def generate(self, messages, *, tools=None, **kwargs):
         if not self.api_key:
             raise RuntimeError("OpenAI provider requires an API key (pass api_key= or set OPENAI_API_KEY).")
+        return super().generate(messages, tools=tools, **kwargs)
 
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": [_message_to_openai(m) for m in messages],
-        }
-        if tools:
-            payload["tools"] = [_tool_to_openai(t) for t in tools]
-        payload.update(kwargs)
 
-        response = requests.post(
-            f"{self.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=self.timeout,
+class Azure(OpenAICompatible):
+    """
+    Provider for Azure OpenAI. `endpoint` is your resource URL
+    (https://<resource>.openai.azure.com) and `deployment` is the name of the
+    model deployment you created in that resource.
+    """
+
+    def __init__(
+        self,
+        deployment: str,
+        *,
+        endpoint: str | None = None,
+        api_key: str | None = None,
+        api_version: str = "2024-10-21",
+        timeout: int = 30,
+    ) -> None:
+        super().__init__(
+            deployment,
+            base_url=endpoint or os.environ.get("AZURE_OPENAI_ENDPOINT") or "",
+            api_key=api_key or os.environ.get("AZURE_OPENAI_API_KEY"),
+            timeout=timeout,
         )
-        response.raise_for_status()
-        data = response.json()
-        choice = data["choices"][0]["message"]
+        self.deployment = deployment
+        self.api_version = api_version
 
-        tool_calls = [
-            ToolCall(id=tc["id"], name=tc["function"]["name"], arguments=json.loads(tc["function"]["arguments"] or "{}"))
-            for tc in choice.get("tool_calls") or []
-        ]
-        return ModelResponse(content=choice.get("content") or "", tool_calls=tool_calls, raw=data, model=data.get("model"))
+    def _url(self) -> str:
+        return f"{self.base_url}/openai/deployments/{self.deployment}/chat/completions"
+
+    def _headers(self) -> dict[str, str]:
+        return {"Content-Type": "application/json", "api-key": self.api_key or ""}
+
+    def _params(self) -> dict[str, str]:
+        return {"api-version": self.api_version}
+
+    def generate(self, messages, *, tools=None, **kwargs):
+        if not self.base_url:
+            raise RuntimeError("Azure provider requires an endpoint (pass endpoint= or set AZURE_OPENAI_ENDPOINT).")
+        if not self.api_key:
+            raise RuntimeError("Azure provider requires an API key (pass api_key= or set AZURE_OPENAI_API_KEY).")
+        return super().generate(messages, tools=tools, **kwargs)
+
+
+class VLLM(OpenAICompatible):
+    """Provider for a vLLM server's OpenAI-compatible endpoint (default http://localhost:8000/v1)."""
+
+    def __init__(
+        self, model: str, *, base_url: str = "http://localhost:8000/v1", api_key: str | None = None, timeout: int = 60
+    ) -> None:
+        super().__init__(model, base_url=base_url, api_key=api_key, timeout=timeout)
+
+
+class LMStudio(OpenAICompatible):
+    """Provider for LM Studio's local server (default http://localhost:1234/v1) — no API key required."""
+
+    def __init__(
+        self, model: str, *, base_url: str = "http://localhost:1234/v1", api_key: str | None = None, timeout: int = 60
+    ) -> None:
+        super().__init__(model, base_url=base_url, api_key=api_key, timeout=timeout)
 
 
 class Ollama(ModelProvider):
@@ -187,7 +317,11 @@ class Ollama(ModelProvider):
             for tc in message.get("tool_calls") or []
         ]
         return ModelResponse(
-            content=message.get("content") or "", tool_calls=tool_calls, raw=data, model=data.get("model", self.model)
+            content=message.get("content") or "",
+            tool_calls=tool_calls,
+            raw=data,
+            model=data.get("model", self.model),
+            usage=_usage(data.get("prompt_eval_count"), data.get("eval_count")),
         )
 
 
@@ -273,7 +407,14 @@ class Anthropic(ModelProvider):
             elif block["type"] == "tool_use":
                 tool_calls.append(ToolCall(id=block["id"], name=block["name"], arguments=block.get("input") or {}))
 
-        return ModelResponse(content="".join(text_parts), tool_calls=tool_calls, raw=data, model=data.get("model"))
+        usage = data.get("usage") or {}
+        return ModelResponse(
+            content="".join(text_parts),
+            tool_calls=tool_calls,
+            raw=data,
+            model=data.get("model"),
+            usage=_usage(usage.get("input_tokens"), usage.get("output_tokens")),
+        )
 
 
 # --- Gemini generateContent API -------------------------------------------------
@@ -339,7 +480,14 @@ class Gemini(ModelProvider):
             for p in parts
             if "functionCall" in p
         ]
-        return ModelResponse(content="".join(text_parts), tool_calls=tool_calls, raw=data, model=self.model)
+        usage = data.get("usageMetadata") or {}
+        return ModelResponse(
+            content="".join(text_parts),
+            tool_calls=tool_calls,
+            raw=data,
+            model=self.model,
+            usage=_usage(usage.get("promptTokenCount"), usage.get("candidatesTokenCount")),
+        )
 
 
 __all__ = [
@@ -349,7 +497,11 @@ __all__ = [
     "ModelResponse",
     "ModelProvider",
     "Mock",
+    "OpenAICompatible",
     "OpenAI",
+    "Azure",
+    "VLLM",
+    "LMStudio",
     "Anthropic",
     "Gemini",
     "Ollama",

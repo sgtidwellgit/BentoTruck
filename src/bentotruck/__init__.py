@@ -20,7 +20,7 @@ from bentotruck import (
 )
 from bentotruck.rice import Agent
 
-__version__ = "0.2.1"
+__version__ = "2026.10.9"
 
 __all__ = [
     "rice",

@@ -1,10 +1,12 @@
-"""edamame — memory: conversation, working, and vector-backed stores behind one interface."""
+"""edamame — memory: conversation, working, vector, long-term, and graph stores behind one interface."""
 
 from __future__ import annotations
 
 import json
 import math
+import re
 import time
+import zlib
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
@@ -75,10 +77,27 @@ class WorkingMemory(Memory):
         self._values.clear()
 
 
+STOPWORDS = frozenset(
+    "a an the and or but if then of to in on at by for with from as is are was were be been being it its this that "
+    "these those there their they them he she we you i our your his her not no so do does did done have has had "
+    "can could would should will may might must also than which who whom what when where why how about into over".split()
+)
+
+
+def _terms(text: str) -> list[str]:
+    """Content words for the default embedder: lowercased, stopwords dropped, simple plurals folded."""
+
+    tokens = re.findall(r"[a-z0-9']+", text.lower())
+    content = [t for t in tokens if t not in STOPWORDS] or tokens
+    return [t[:-1] if len(t) > 3 and t.endswith("s") and not t.endswith("ss") else t for t in content]
+
+
 def _default_embed(text: str, dims: int = 256) -> list[float]:
+    # crc32, not hash(): str hashing is randomized per process, which would make
+    # rankings (and LongTermMemory reloads) differ from run to run
     vector = [0.0] * dims
-    for token in text.lower().split():
-        vector[hash(token) % dims] += 1.0
+    for token in _terms(text):
+        vector[zlib.crc32(token.encode("utf-8")) % dims] += 1.0
     norm = math.sqrt(sum(v * v for v in vector)) or 1.0
     return [v / norm for v in vector]
 
@@ -147,4 +166,105 @@ class LongTermMemory(Memory):
         self.path.write_text(json.dumps(data), encoding="utf-8")
 
 
-__all__ = ["MemoryItem", "Memory", "ConversationMemory", "WorkingMemory", "VectorMemory", "LongTermMemory"]
+@dataclass(frozen=True)
+class Fact:
+    """One edge in a GraphMemory: subject —relation→ object."""
+
+    subject: str
+    relation: str
+    object: str
+
+    def __str__(self) -> str:
+        return f"{self.subject} {self.relation} {self.object}"
+
+
+# multi-word relations come first so "is located in" wins over plain "is"
+_FACT_PATTERN = re.compile(
+    r"^\s*(?P<subject>.+?)\s+(?P<relation>is located in|works at|works for|lives in|belongs to|depends on|"
+    r"reports to|is|are|was|were|has|have|owns|likes|prefers|uses)\s+(?P<object>.+?)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+_ENTITY = re.compile(r"\b[A-Z][\w-]*(?:\s+[A-Z][\w-]*)*")
+
+
+class GraphMemory(Memory):
+    """
+    Knowledge-graph memory: stores facts as (subject, relation, object) edges and
+    recalls by walking the graph out from entities mentioned in the query.
+
+    Add facts explicitly with `add_fact(...)`, or pass plain sentences to `add()` —
+    simple "X is Y" / "X works at Y" style statements are parsed into facts, and
+    anything else is linked to the capitalized entities it mentions.
+    """
+
+    def __init__(self, *, depth: int = 1) -> None:
+        self.depth = depth
+        self._facts: list[Fact] = []
+
+    def add_fact(self, subject: str, relation: str, obj: str) -> Fact:
+        fact = Fact(subject.strip(), relation.strip(), obj.strip())
+        if fact not in self._facts:
+            self._facts.append(fact)
+        return fact
+
+    def add(self, role: str, content: str, **metadata: Any) -> None:
+        if {"subject", "relation", "object"} <= metadata.keys():
+            self.add_fact(metadata["subject"], metadata["relation"], metadata["object"])
+            return
+        match = _FACT_PATTERN.match(content)
+        if match:
+            self.add_fact(match["subject"], match["relation"].lower(), match["object"])
+            return
+        for entity in dict.fromkeys(_ENTITY.findall(content)):
+            self.add_fact(entity, "mentioned in", content)
+
+    def facts(self, subject: str | None = None, relation: str | None = None, obj: str | None = None) -> list[Fact]:
+        """Facts matching every given field (case-insensitive)."""
+
+        def ok(value: str, wanted: str | None) -> bool:
+            return wanted is None or value.lower() == wanted.lower()
+
+        return [f for f in self._facts if ok(f.subject, subject) and ok(f.relation, relation) and ok(f.object, obj)]
+
+    def entities(self) -> list[str]:
+        return list(dict.fromkeys(name for f in self._facts for name in (f.subject, f.object)))
+
+    def neighbors(self, entity: str) -> list[Fact]:
+        key = entity.lower()
+        return [f for f in self._facts if f.subject.lower() == key or f.object.lower() == key]
+
+    def recall(self, query: str | None = None, *, k: int = 5) -> list[MemoryItem]:
+        if query is None:
+            return [MemoryItem(role="fact", content=str(f)) for f in self._facts[-k:]]
+
+        lowered = query.lower()
+        frontier = {e.lower() for e in self.entities() if re.search(rf"\b{re.escape(e.lower())}\b", lowered)}
+        seen_entities = set(frontier)
+        found: list[Fact] = []
+        for _ in range(self.depth + 1):
+            next_frontier: set[str] = set()
+            for entity in frontier:
+                for fact in self.neighbors(entity):
+                    if fact not in found:
+                        found.append(fact)
+                    for name in (fact.subject.lower(), fact.object.lower()):
+                        if name not in seen_entities:
+                            next_frontier.add(name)
+            seen_entities |= next_frontier
+            frontier = next_frontier
+        return [MemoryItem(role="fact", content=str(f)) for f in found[:k]]
+
+    def clear(self) -> None:
+        self._facts.clear()
+
+
+__all__ = [
+    "MemoryItem",
+    "Memory",
+    "ConversationMemory",
+    "WorkingMemory",
+    "VectorMemory",
+    "LongTermMemory",
+    "GraphMemory",
+    "Fact",
+]

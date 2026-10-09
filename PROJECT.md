@@ -1,6 +1,6 @@
 # BentoTruck — Project Document
 
-> **Current version:** 0.2.0 | **Python:** ≥ 3.9 | **Status:** MVP core implemented, remaining compartments design-stage
+> **Current version:** 2026.10.9 | **Python:** ≥ 3.9 (tested on 3.9, 3.12, 3.13) | **Status:** All sixteen compartments implemented
 
 ---
 
@@ -9,7 +9,7 @@
 1. [What BentoTruck Is](#what-bentotruck-is)
 2. [The Philosophy](#the-philosophy)
 3. [Current State](#current-state)
-4. [The Compartments — All Planned Modules](#the-compartments--all-planned-modules)
+4. [The Compartments](#the-compartments)
 5. [Design Principles](#design-principles)
 6. [Inter-Op with the Fleet](#inter-op-with-the-fleet)
 7. [The Food Truck Fleet](#the-food-truck-fleet)
@@ -21,7 +21,7 @@
 
 BentoTruck is the **agent engineering** toolkit for the food truck fleet. Where SushiTruck ingests data, ThaiTruck cleans it, and RamenTruck trains models on it, BentoTruck covers what comes after a model exists: wiring it into an agent that can hold state, call tools, remember things, and act.
 
-It is not tied to one model vendor and does not wrap an existing agent framework — every provider (OpenAI, Anthropic, Gemini, Ollama, ...) speaks through the same `nigiri.ModelProvider.generate()` interface, so switching vendors is a one-line change.
+It is not tied to one model vendor and does not wrap an existing agent framework — every provider (OpenAI, Anthropic, Gemini, Azure, Ollama, vLLM, LM Studio, any OpenAI-compatible server) speaks through the same `nigiri.ModelProvider.generate()` interface, so switching vendors is a one-line change.
 
 ```bash
 pip install bentotruck
@@ -43,51 +43,43 @@ The guiding design values:
 
 | Item | Status |
 |---|---|
-| PyPI name `bentotruck` | Published (0.1.0 placeholder, 2026-06-24) |
-| Version | 0.2.0 — first real release |
-| `rice` (core agent) | Implemented — `Agent`, `Session`, `Context`, `State`, `Event`, `EventBus` |
-| `nigiri` (model providers) | Implemented — `ModelProvider` base, `Mock`, `OpenAI`, `Anthropic`, `Gemini`, `Ollama` |
-| `gyoza` (tools) | Implemented — `Tool` base, `PythonTool`, `RESTTool`, `SQLTool`, `FilesystemTool`, `Toolbox` |
-| `edamame` (memory) | Implemented — `Memory` base, `ConversationMemory`, `WorkingMemory`, `VectorMemory`, `LongTermMemory` |
-| `teriyaki`, `tempura`, `miso`, `yuzu`, `onigiri`, `bento`, `sake`, `udon`, `dango`, `naruto`, `katsu`, `wasabi` | Design-stage — docstring-only stubs describing planned API |
-| `pyproject.toml` | Exists — hatchling build, Python ≥ 3.9, MIT license, `requests` dependency, `dev` extra |
-| `README.md` | Exists — install, quick example, fleet context |
-| Tests | `tests/test_{rice,nigiri,gyoza,edamame}.py` covering the implemented compartments |
+| PyPI name `bentotruck` | Published (0.1.0 placeholder 2026-06-24; 0.2.0 / 0.2.1 MVP core) |
+| Versioning | Date-based `YYYY.M.D` from 2026.10.9 on (replaces semver) |
+| Version | 2026.10.9 — all compartments implemented |
+| Runtime dependencies | `requests` only; optional `otel` extra for OpenTelemetry export |
+| Tests | 200+ tests, all offline (`nigiri.Mock`, `responses`, a fake stdio MCP server); every `README.md` example is executed by `tests/test_readme.py` |
+| `README.md` | Copy-pasteable, tested examples for every compartment |
 
-## The Compartments — All Planned Modules
+## The Compartments
 
-| Module | Role | Status |
-|--------|------|--------|
-| `rice` | Core Agent — Agent, Session, Context, State, Events | **Implemented** |
-| `nigiri` | Models — vendor-neutral providers | **Implemented** |
-| `gyoza` | Tools — one calling interface | **Implemented** |
-| `edamame` | Memory — conversation, working, vector, long-term | **Implemented** |
-| `teriyaki` | Planning — ReAct, Tree, Graph, Step, Goal planners | Planned |
-| `tempura` | Skills — reusable named behaviors | Planned |
-| `miso` | Reflection — self-critique and retry | Planned |
-| `yuzu` | Evaluation — confidence, grounding, cost, quality metrics | Planned |
-| `onigiri` | Workflows — graph-shaped orchestration with branching | Planned |
-| `bento` | Multi-Agent — team orchestration (flagship) | Planned |
-| `sake` | Communication — actor-model inter-agent messaging | Planned |
-| `udon` | Pipelines — linear/parallel stage execution | Planned |
-| `dango` | Prompts — templated, versioned prompt management | Planned |
-| `naruto` | Routing — capability/semantic/rule/intent routers | Planned |
-| `katsu` | Safety — PII, injection, moderation guardrails | Planned |
-| `wasabi` | Observability — tracing, logging, metrics | Planned |
+| Module | Role | What's implemented |
+|--------|------|--------------------|
+| `rice` | Core agent | `Agent` (fluent: `using`, `with_tools`, `with_memory`, `with_planner`, `with_router`, `with_guards`, `learn`/`use`), `Session` (with snapshot/restore), `Context`, `State`, `EventBus`, `Event`/`EventType`, `Runnable` protocol + `invoke()` |
+| `nigiri` | Models | `ModelProvider` (+ `complete()`), `Mock` (fixed / queued / responder), `OpenAI`, `Azure`, `VLLM`, `LMStudio`, `OpenAICompatible`, `Anthropic`, `Gemini`, `Ollama`; normalized token `usage` on every `ModelResponse` |
+| `gyoza` | Tools | `Tool`, `FunctionTool` + `@tool` (schema inferred from type hints), `PythonTool`, `RESTTool`, `SQLTool`, `FilesystemTool`, `BrowserTool` (SSRF-safe), `DockerTool` (locked-down container), `MCPClient`/`MCPTool` (stdio MCP), `Toolbox` |
+| `edamame` | Memory | `ConversationMemory`, `WorkingMemory`, `VectorMemory`, `LongTermMemory`, `GraphMemory` (+ `Fact`); deterministic offline embedder; recall injected into agent context |
+| `teriyaki` | Planning | `Planner`, `ReActPlanner` (default), `StepPlanner`, `GoalPlanner`, `TreePlanner`, `GraphPlanner` + `Task` |
+| `tempura` | Skills | `Skill`, `SummarizeSkill`, `SearchSkill`, `ResearchSkill`, `CodingSkill`, `PlanningSkill`, `@skill` |
+| `miso` | Reflection | `Critique`, `Reflect`, `Improve`, `Retry`, `Verify` (+ ready-made checks) |
+| `yuzu` | Evaluation | `Sample`, `capture()`, `Latency`, `Cost`, `Grounding`, `Hallucination`, `Confidence`, `Quality`, `Evaluator` (+ `run_suite`) |
+| `onigiri` | Workflows | `Workflow` (conditional edges, loops, `END`), `Step`, `Loop`, `Condition` (`&`/`|`/`~`, `contains`, `visited`), `State` |
+| `bento` | Multi-agent | `Bento` team with `Sequential`, `Parallel`, `Coordinator`, `Vote` strategies; nested teams; transcript over `sake` |
+| `sake` | Messaging | `Hub` (actors, request/reply, broadcast), `Mailbox`, `Message`, `Broadcast`, `Event`, `Channel`, `Topic` (glob routing) |
+| `udon` | Pipelines | `Pipeline` (`|` composition, per-stage trace), `Step`, `Condition`, `Loop`, `Parallel` |
+| `dango` | Prompts | `Template`, `Variables`/`Var`, `SystemPrompt`, `FewShot`, `PromptRepository` (versions, JSON persistence, stable A/B) |
+| `naruto` | Routing | `RuleRouter`, `SemanticRouter`, `IntentRouter`, `CapabilityRouter`, `HybridRouter`; `Route`, `NoRouteError` |
+| `katsu` | Safety | `PIIFilter`, `InjectionGuard`, `Moderation`, `OutputValidator` (JSON Schema subset), `PolicyEngine`; `GuardViolation` |
+| `wasabi` | Observability | `Tracer` (nested spans, thread-safe), `ConsoleExporter`, `JSONLExporter`, `OpenTelemetryExporter`, `Logger`, `Metrics`, `Profiler` |
 
-`rice.Agent` already exposes forward-compatible hooks for several of these:
-`.with_router(...)` accepts anything shaped like a future `naruto` router,
-`.events` (an `EventBus`) is the attachment point `wasabi` exporters will
-subscribe to, and the tool-calling loop in `Agent.run` is the concrete
-strategy `teriyaki.ReActPlanner` will eventually become a pluggable
-alternative to.
+**The unifying idea:** anything with `.run(input)` is `rice.Runnable` — agents, teams, workflows, pipelines, routers, and `miso` wrappers. `rice.invoke(target, value)` runs a Runnable or a plain callable, so every compartment can nest inside every other.
 
 ## Design Principles
 
 1. **One interface per concern.** `ModelProvider.generate()`, `Tool.run()`, `Memory.add()`/`recall()` — every implementation of a concern is interchangeable because the interface is minimal and concern-specific.
-2. **No vendor lock-in leaks upward.** Only `nigiri` imports `requests` and knows vendor wire formats. `rice.Agent` only ever sees `nigiri.Message` / `nigiri.ModelResponse`.
-3. **Tools are sandboxed by default.** Anything that executes code, hits the filesystem, or runs SQL ships with a restrictive default (AST-whitelist eval, root-jailed paths, parameterized queries) rather than a raw `exec`/`open`/string-formatted query.
+2. **No vendor lock-in leaks upward.** Only `nigiri` knows vendor wire formats. `rice.Agent` only ever sees `nigiri.Message` / `nigiri.ModelResponse`, and no compartment imports a vendor SDK.
+3. **Tools are sandboxed by default.** Anything that executes code, hits the filesystem or the web, or runs SQL ships with a restrictive default (AST-whitelist eval, root-jailed paths, parameterized queries, private-address-blocking fetches, network-less read-only containers) rather than a raw `exec`/`open`/`requests.get`/string-formatted query.
 4. **Everything works offline.** `nigiri.Mock` plus `edamame.VectorMemory`'s default embedder mean `rice.Agent`'s full tool-calling loop is exercised in tests with no network access and no API keys.
+5. **Everything composes.** One `Runnable` shape (`.run(input)`) across agents, teams, workflows, pipelines, routers, and reflection wrappers; one `EventBus` that planners, skills, and teams all publish to, so `wasabi` sees everything.
 
 ## Inter-Op with the Fleet
 
@@ -102,9 +94,7 @@ BentoTruck's tools are a natural place to plug in the rest of the fleet: a `gyoz
 
 ## Build & Publish Plan
 
-1. MVP core (`rice`, `nigiri`, `gyoza`, `edamame`) — **done**, this pass.
-2. `teriyaki` (planning) — make the agent loop's strategy pluggable, starting with `ReActPlanner` extracted from `rice.Agent.run`.
-3. `wasabi` (observability) — subscribe an exporter to `rice.EventBus`.
-4. `bento` + `sake` — multi-agent orchestration, the flagship module.
-5. Remaining compartments (`tempura`, `miso`, `yuzu`, `onigiri`, `udon`, `dango`, `naruto`, `katsu`) as needed by real usage rather than speculatively.
-6. First PyPI release once `teriyaki` and `wasabi` land — a framework with one hardcoded planning strategy and no observability hook isn't yet "agent engineering," just an agent.
+1. MVP core (`rice`, `nigiri`, `gyoza`, `edamame`) — **done** (0.2.x).
+2. Remaining twelve compartments, plus the vision's missing pieces (Azure/vLLM/LM Studio providers, Browser/Docker/MCP tools, GraphMemory) — **done** (2026.10.9).
+3. Next: fleet adapters — `gyoza` tools wrapping SushiTruck streams and ThaiTruck cleaning pipelines (see Inter-Op above).
+4. Next: async variants (`Agent.arun`, async providers) and streaming responses, driven by real usage.
