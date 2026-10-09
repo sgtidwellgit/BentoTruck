@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bentotruck"
-version = "0.2.1"
+version = "2026.10.9"
 description = "An agent engineering framework — every compartment of the bento box is a building block for agentic systems."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "sgtidwell" }]
-keywords = ["agents", "agentic", "llm", "orchestration", "tools", "framework"]
+authors = [{ name = "Babble Baz", email = "dev@babblebaz.com" }]
+keywords = ["agents", "agentic", "llm", "multi-agent", "orchestration", "tools", "mcp", "guardrails", "observability", "framework"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -20,6 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
@@ -29,7 +30,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "pytest-cov", "responses>=0.23", "build", "twine"]
+otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
+dev = ["pytest>=7", "pytest-cov", "responses>=0.23", "build", "twine", "opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
 
 [project.urls]
 Homepage = "https://github.com/sgtidwellgit/BentoTruck"

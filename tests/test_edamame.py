@@ -107,3 +107,27 @@ class TestLongTermMemory:
 
         reloaded = LongTermMemory(path)
         assert reloaded.recall() == []
+
+
+def test_graph_memory_parses_facts_and_recalls_neighbors():
+    from bentotruck.edamame import Fact, GraphMemory
+
+    memory = GraphMemory(depth=1)
+    memory.add("user", "Ada works at Bento Truck.")
+    memory.add("user", "Bento Truck is located in Austin")
+    memory.add_fact("Austin", "is in", "Texas")
+    memory.add("user", "Grace likes ramen", subject="Grace", relation="likes", object="ramen")
+    memory.add("note", "we met Linus at the Market today")  # not a pattern: linked by entity
+
+    assert memory.facts(subject="ada") == [Fact("Ada", "works at", "Bento Truck")]
+    assert memory.facts(subject="Bento Truck") == [Fact("Bento Truck", "is located in", "Austin")]
+    recalled = [item.content for item in memory.recall("Where does Ada work?", k=10)]
+    assert recalled == ["Ada works at Bento Truck", "Bento Truck is located in Austin"]
+    deeper = GraphMemory(depth=2)
+    for fact in memory.facts():
+        deeper.add_fact(fact.subject, fact.relation, fact.object)
+    assert "Austin is in Texas" in [i.content for i in deeper.recall("Ada", k=10)]
+    assert memory.facts(subject="Linus")[0].relation == "mentioned in"
+    assert [i.content for i in memory.recall(None, k=1)] == [str(memory.facts()[-1])]
+    memory.clear()
+    assert memory.recall("Ada") == []

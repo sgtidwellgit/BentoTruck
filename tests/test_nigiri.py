@@ -8,6 +8,7 @@ from bentotruck.nigiri import (
     Gemini,
     Message,
     Mock,
+    ModelResponse,
     Ollama,
     OpenAI,
     ToolCall,
@@ -169,3 +170,85 @@ def test_ollama_parses_response_no_api_key_required():
     response = provider.generate([Message(role="user", content="hi")])
     assert response.content == "hi"
     assert response.tool_calls == []
+
+
+def test_mock_replies_queue_repeats_last():
+    provider = Mock(replies=["one", ModelResponse.calling("t", x=1), "last"])
+    assert provider.generate([]).content == "one"
+    second = provider.generate([])
+    assert second.tool_calls[0].name == "t" and second.tool_calls[0].arguments == {"x": 1}
+    assert second.model == "mock"
+    assert [provider.generate([]).content for _ in range(2)] == ["last", "last"]
+
+
+def test_complete_convenience():
+    provider = Mock(reply="hi")
+    assert provider.complete("hello", system="be nice") == "hi"
+    assert [m.role for m in provider.calls[0]] == ["system", "user"]
+
+
+@responses.activate
+def test_openai_reports_usage():
+    responses.add(
+        responses.POST,
+        "https://api.openai.com/v1/chat/completions",
+        json={"choices": [{"message": {"content": "x"}}], "usage": {"prompt_tokens": 7, "completion_tokens": 3}},
+    )
+    assert OpenAI(api_key="k").generate([Message(role="user", content="hi")]).usage == {
+        "input_tokens": 7,
+        "output_tokens": 3,
+    }
+
+
+@responses.activate
+def test_azure_uses_deployment_url_and_api_key_header():
+    from bentotruck.nigiri import Azure
+
+    responses.add(
+        responses.POST,
+        "https://res.openai.azure.com/openai/deployments/my-dep/chat/completions",
+        json={"choices": [{"message": {"content": "azure hi"}}]},
+    )
+    provider = Azure("my-dep", endpoint="https://res.openai.azure.com", api_key="k")
+    assert provider.generate([Message(role="user", content="hi")]).content == "azure hi"
+    request = responses.calls[0].request
+    assert request.headers["api-key"] == "k"
+    assert "api-version=" in request.url
+
+
+def test_azure_requires_endpoint_and_key(monkeypatch):
+    from bentotruck.nigiri import Azure
+
+    monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="endpoint"):
+        Azure("d").generate([])
+    with pytest.raises(RuntimeError, match="API key"):
+        Azure("d", endpoint="https://x").generate([])
+
+
+@responses.activate
+def test_vllm_and_lmstudio_need_no_key():
+    from bentotruck.nigiri import LMStudio, VLLM
+
+    responses.add(responses.POST, "http://localhost:8000/v1/chat/completions", json={"choices": [{"message": {"content": "v"}}]})
+    responses.add(responses.POST, "http://localhost:1234/v1/chat/completions", json={"choices": [{"message": {"content": "l"}}]})
+    assert VLLM("m").generate([Message(role="user", content="hi")]).content == "v"
+    assert LMStudio("m").generate([Message(role="user", content="hi")]).content == "l"
+    assert "Authorization" not in responses.calls[0].request.headers
+
+
+@responses.activate
+def test_anthropic_gemini_ollama_usage():
+    responses.add(responses.POST, "https://api.anthropic.com/v1/messages",
+                  json={"content": [{"type": "text", "text": "a"}], "usage": {"input_tokens": 1, "output_tokens": 2}})
+    responses.add(responses.POST,
+                  "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+                  json={"candidates": [{"content": {"parts": [{"text": "g"}]}}],
+                        "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 4}})
+    responses.add(responses.POST, "http://localhost:11434/api/chat",
+                  json={"message": {"content": "o"}, "prompt_eval_count": 5, "eval_count": 6})
+    msgs = [Message(role="user", content="hi")]
+    assert Anthropic(model="m", api_key="k").generate(msgs).usage == {"input_tokens": 1, "output_tokens": 2}
+    assert Gemini(api_key="k").generate(msgs).usage == {"input_tokens": 3, "output_tokens": 4}
+    assert Ollama().generate(msgs).usage == {"input_tokens": 5, "output_tokens": 6}

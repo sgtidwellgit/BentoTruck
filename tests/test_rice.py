@@ -87,6 +87,7 @@ def test_events_are_published_in_order():
     assert events == [
         EventType.AGENT_START,
         EventType.MESSAGE,
+        EventType.MODEL_CALL,
         EventType.MESSAGE,
         EventType.AGENT_DONE,
     ]
@@ -108,3 +109,84 @@ def test_with_tools_accepts_toolbox_unpacked():
     box = Toolbox(PythonTool(), RESTTool("api", "d", url="https://example.com"))
     agent = Agent("assistant").using(Mock()).with_tools(*box)
     assert {t.name for t in agent.tools} == {"python", "api"}
+
+
+def test_memory_recall_is_shown_to_the_model():
+    from bentotruck.edamame import VectorMemory
+
+    memory = VectorMemory()
+    memory.add("user", "My favorite dish is gyoza")
+    memory.add("user", "The truck is blue")
+    provider = Mock(reply="gyoza!")
+    agent = Agent("a").using(provider).with_memory(memory, recall=1)
+    agent.run("what is my favorite dish?")
+
+    notes = [m for m in provider.calls[0] if m.role == "system"]
+    assert len(notes) == 1 and "My favorite dish is gyoza" in notes[0].content
+    assert "blue" not in notes[0].content
+
+
+def test_memory_recall_skips_live_session_and_can_be_disabled():
+    memory = ConversationMemory()
+    provider = Mock(reply="ok")
+    agent = Agent("a").using(provider).with_memory(memory)
+    agent.run("first")
+    agent.run("second")
+    assert not any(m.role == "system" for m in provider.calls[1])  # everything recalled is already in the session
+
+    off = Mock(reply="ok")
+    memory.add("user", "old fact")
+    Agent("b").using(off).with_memory(memory, recall=0).run("q")
+    assert not any(m.role == "system" for m in off.calls[0])
+
+
+def test_model_call_event_carries_usage_and_duration():
+    events = []
+    agent = Agent("a").using(Mock(replies=[ModelResponse("hi", usage={"input_tokens": 3, "output_tokens": 1})]))
+    agent.events.subscribe(lambda e: events.append(e) if e.type == EventType.MODEL_CALL else None)
+    agent.run("x")
+    assert events[0].data["usage"] == {"input_tokens": 3, "output_tokens": 1}
+    assert events[0].data["duration"] >= 0 and events[0].source == "a"
+
+
+def test_ask_has_no_session_side_effects_and_no_tools():
+    seen = {}
+
+    def responder(messages, tools):
+        seen["tools"] = tools
+        return ModelResponse(content="answer")
+
+    agent = Agent("a").using(Mock(responder=responder)).with_tools(PythonTool())
+    assert agent.ask("quick question") == "answer"
+    assert seen["tools"] is None
+    assert agent.session.history() == []
+
+
+def test_session_snapshot_restore():
+    from bentotruck.nigiri import Message
+    from bentotruck.rice import Session
+
+    session = Session()
+    session.add(Message(role="user", content="keep"))
+    mark = session.snapshot()
+    session.add(Message(role="user", content="drop"))
+    session.restore(mark)
+    assert [m.content for m in session.history()] == ["keep"]
+
+
+def test_errors_publish_error_event():
+    events = []
+    agent = Agent("a").using(Mock(responder=lambda m, t: (_ for _ in ()).throw(ValueError("api down"))))
+    agent.events.subscribe(lambda e: events.append(e))
+    with pytest.raises(ValueError):
+        agent.run("x")
+    assert events[-1].type == EventType.ERROR and events[-1].data["reason"] == "api down"
+
+
+def test_invoke_handles_runnables_and_callables():
+    from bentotruck.rice import invoke
+
+    assert invoke(Agent("a").using(Mock(reply="r")), "x") == "r"
+    assert invoke(str.upper, "x") == "X"
+    with pytest.raises(TypeError):
+        invoke(42, "x")
